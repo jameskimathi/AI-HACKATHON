@@ -1,28 +1,28 @@
-apiVersion: ai.sap.com/v1alpha1
-kind: ServingTemplate
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
 metadata:
-    name: ai-hackathon
-    annotations:
-        scenarios.ai.sap.com/description: "ai-hackathon-scenario"
-        scenarios.ai.sap.com/name: "ai-hackathon-scenario"
-        executables.ai.sap.com/description: "ai-hackathon-executable"
-        executables.ai.sap.com/name: "ai-hackathon-executable"
-    labels:
-        scenarios.ai.sap.com/id: "ai-hackathon-scenario"
-        ai.sap.com/version: "1.0"
+  name: code-pipeline # executable id, must be unique across all your workflows (YAML files), please modify this to any value (e.g. code-pipeline-12345) if you are not the only user of your SAP AI Core instance.
+  annotations:
+    scenarios.ai.sap.com/description: "Tutorial to add custom code to SAP AI Core"
+    scenarios.ai.sap.com/name: "Code (Tutorial)"
+    executables.ai.sap.com/description: "Trains model on median house prices"
+    executables.ai.sap.com/name: "House Price (Sklearn Example)"
+  labels:
+    scenarios.ai.sap.com/id: "learning-code"
+    ai.sap.com/version: "1.0"
 spec:
-    template:
-        apiVersion: "serving.kserve.io/v1beta1"
-        metadata:
-            labels: |
-                ai.sap.com/resourcePlan: infer.s
-        spec: |
-            predictor:
-              imagePullSecrets:
-              - name: ies-intelligent-assistant
-              containers:
-              - name: kfserving-container
-                image: docker.io/jkimathi2/ies-intelligent-assistant-docker:latest
-                ports:
-                - containerPort: 8000
-                  protocol: TCP
+  imagePullSecrets:
+    - name: credstutorialrepo # your docker registry secret
+  entrypoint: mypipeline
+  templates:
+  - name: mypipeline
+    steps:
+    - - name: mypredictor
+        template: mycodeblock1
+
+  - name: mycodeblock1
+    container:
+      image: docker.io/jkimathi2/houseprice:latest # Your docker image name
+      command: ["/bin/sh", "-c"]
+      args:
+        - "python /app/src/main.py"
