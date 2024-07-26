@@ -9,10 +9,10 @@ metadata:
     executables.ai.sap.com/name: "House Price (Sklearn Example)"
   labels:
     scenarios.ai.sap.com/id: "learning-code"
-    ai.sap.com/version: "1.0"
+    ai.sap.com/version: "2.0"
 spec:
   imagePullSecrets:
-    - name: credstutorialrepo # your docker registry secret
+    - name: james-docker
   entrypoint: mypipeline
   templates:
   - name: mypipeline
