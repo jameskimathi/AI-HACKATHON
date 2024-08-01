@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
 import requests
 from requests.auth import HTTPBasicAuth
+import csv
+import re
 
 app = Flask(__name__)
 
@@ -8,6 +10,15 @@ app = Flask(__name__)
 chat_sessions = {}
 
 TOKEN_LIMIT = 128000
+
+background_prompt = (
+    "You are the digital assistant of the online pharmacy DocMorris. "
+    "You have a knowledge table with the header 'order', 'status', 'eta', 'postcode'. "
+    "Your task is to authenticate the user first with 'order' and 'postcode', and provide only the answer with 'status' if the user provided both 'order' and 'postcode'. "
+    "An order number is always a 10 digit number, and a postcode is always a 5 digit number. "
+    "If both are correct, check against the database to provide the order status. "
+    "If the user provides either the order number or postcode, extract it and ask for the missing information."
+)
 
 
 def generate_bearer_token(client_id, client_secret, auth_url):
@@ -45,7 +56,7 @@ def set_headers(token):
 def define_body(chat_history):
     return {
         "messages": chat_history,
-        "max_tokens": 1000,
+        "max_tokens": 100,
         "temperature": 0.0,
         "frequency_penalty": 0,
         "presence_penalty": 0,
@@ -70,6 +81,15 @@ def send_post_request(url, headers, params, body):
     return response
 
 
+def search_database(order, postcode):
+    with open("database.csv", mode="r") as file:
+        reader = csv.DictReader(file, delimiter=";")
+        for row in reader:
+            if row["ORDER"] == order and row["POSTCODE"] == postcode:
+                return row["STATUS"]
+    return None
+
+
 @app.route("/api/prompt", methods=["POST"])
 def handle_prompt():
     data = request.get_json()
@@ -78,10 +98,6 @@ def handle_prompt():
 
     if not user_prompt or not session_id:
         return jsonify({"error": "No prompt or session_id provided"}), 400
-
-    if user_prompt.strip().lower() == "end":
-        chat_sessions.pop(session_id, None)
-        return jsonify({"message": "Chat history ended and deleted."})
 
     client_id = "sb-32916cb2-878b-4119-9375-dfccd7bb59ee!b499187|aicore!b540"
     client_secret = "99c22903-0345-49bc-a433-1b8e94d25c4a$2YZL8snh3OrfRhxPiaOkLNFtNLFXohHGJ24_B9o_gmA="
@@ -94,10 +110,78 @@ def handle_prompt():
 
     # Retrieve or initialize chat history for the session
     if session_id not in chat_sessions:
-        chat_sessions[session_id] = []
+        chat_sessions[session_id] = {
+            "history": [{"role": "system", "content": background_prompt}],
+            "user_data": {"order": "", "postcode": ""},
+        }
 
-    chat_history = chat_sessions[session_id]
+    session_data = chat_sessions[session_id]
+    chat_history = session_data["history"]
+    user_data = session_data["user_data"]
+
     chat_history.append({"role": "user", "content": user_prompt})
+
+    if user_prompt.strip().lower() == "end":
+        chat_sessions.pop(session_id, None)
+        return jsonify({"message": "Chat history ended and deleted."})
+
+    if not user_data["order"] or not user_data["postcode"]:
+        url = define_url()
+        params = set_parameters()
+        headers = set_headers(token)
+        body = define_body(chat_history)
+
+        response = send_post_request(url, headers, params, body)
+
+        if response.status_code == 200:
+            response_json = response.json()
+            content = (
+                response_json.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+            )
+
+            order_match = re.search(r"\b\d{10}\b", content)
+            postcode_match = re.search(r"\b\d{5}\b", content)
+
+            if order_match:
+                user_data["order"] = order_match.group(0)
+            if postcode_match:
+                user_data["postcode"] = postcode_match.group(0)
+
+            if not user_data["order"] or not user_data["postcode"]:
+                chat_history.append({"role": "assistant", "content": content})
+                # Check token limit and trim chat history if necessary
+                chat_history = trim_chat_history(chat_history)
+                return jsonify({"content": content})
+        else:
+            return (
+                jsonify(
+                    {
+                        "error": "Request failed",
+                        "status_code": response.status_code,
+                        "message": response.text,
+                    }
+                ),
+                response.status_code,
+            )
+
+    status = search_database(user_data["order"], user_data["postcode"])
+    if status:
+        chat_history.append(
+            {"role": "assistant", "content": f"Your order is currently {status}."}
+        )
+        user_data["order"] = ""
+        user_data["postcode"] = ""
+    else:
+        chat_history.append(
+            {
+                "role": "assistant",
+                "content": "Either your order number or your postcode is wrong. Can I have your order number and your postcode?",
+            }
+        )
+        user_data["order"] = ""
+        user_data["postcode"] = ""
 
     # Check token limit and trim chat history if necessary
     chat_history = trim_chat_history(chat_history)
@@ -134,3 +218,8 @@ def handle_prompt():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+
+# client_id = "sb-32916cb2-878b-4119-9375-dfccd7bb59ee!b499187|aicore!b540"
+# client_secret = "99c22903-0345-49bc-a433-1b8e94d25c4a$2YZL8snh3OrfRhxPiaOkLNFtNLFXohHGJ24_B9o_gmA="
+# auth_url = "https://ai-hackathon-k10o010k.authentication.eu10.hana.ondemand.com/oauth/token?grant_type=client_credentials"
