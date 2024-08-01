@@ -90,6 +90,85 @@ def search_database(order, postcode):
     return None
 
 
+def extract_order_and_postcode(content):
+    order_match = re.search(r"\b\d{10}\b", content)
+    postcode_match = re.search(r"\b\d{5}\b", content)
+    return order_match.group(0) if order_match else None, (
+        postcode_match.group(0) if postcode_match else None
+    )
+
+
+def initialize_session(session_id):
+    if session_id not in chat_sessions:
+        chat_sessions[session_id] = {
+            "history": [{"role": "system", "content": background_prompt}],
+            "user_data": {"order": "", "postcode": ""},
+        }
+    return chat_sessions[session_id]
+
+
+def handle_end_session(session_id):
+    chat_sessions.pop(session_id, None)
+    return {"message": "Chat history ended and deleted."}
+
+
+def process_user_prompt(session_data, user_prompt):
+    chat_history = session_data["history"]
+    user_data = session_data["user_data"]
+
+    order, postcode = extract_order_and_postcode(user_prompt)
+
+    if order:
+        user_data["order"] = order
+    if postcode:
+        user_data["postcode"] = postcode
+
+    if not user_data["order"] or not user_data["postcode"]:
+        return chat_history, user_data, False
+
+    return chat_history, user_data, True
+
+
+def process_assistant_response(token, chat_history, user_data):
+    url = define_url()
+    params = set_parameters()
+    headers = set_headers(token)
+    body = define_body(chat_history)
+
+    response = send_post_request(url, headers, params, body)
+
+    if response.status_code == 200:
+        response_json = response.json()
+        content = (
+            response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+        )
+
+        order, postcode = extract_order_and_postcode(content)
+
+        if order:
+            user_data["order"] = order
+        if postcode:
+            user_data["postcode"] = postcode
+
+        if not user_data["order"] or not user_data["postcode"]:
+            chat_history.append({"role": "assistant", "content": content})
+            chat_history = trim_chat_history(chat_history)
+            return content, False
+    return None, True
+
+
+def handle_search_status(user_data):
+    status = search_database(user_data["order"], user_data["postcode"])
+    if status:
+        user_data["order"] = ""
+        user_data["postcode"] = ""
+        return f"Your order is currently {status}. Do you want to check another order?"
+    else:
+        user_data["order"] = ""
+        user_data["postcode"] = ""
+        return "Either your order number or your postcode is wrong. Can I have your order number and your postcode?"
+
+
 @app.route("/api/prompt", methods=["POST"])
 def handle_prompt():
     data = request.get_json()
@@ -108,82 +187,28 @@ def handle_prompt():
     if token is None:
         return jsonify({"error": "Token generation failed"}), 500
 
-    # Retrieve or initialize chat history for the session
-    if session_id not in chat_sessions:
-        chat_sessions[session_id] = {
-            "history": [{"role": "system", "content": background_prompt}],
-            "user_data": {"order": "", "postcode": ""},
-        }
-
-    session_data = chat_sessions[session_id]
+    session_data = initialize_session(session_id)
     chat_history = session_data["history"]
-    user_data = session_data["user_data"]
+
+    if user_prompt.strip().lower() == "end":
+        return jsonify(handle_end_session(session_id))
 
     chat_history.append({"role": "user", "content": user_prompt})
 
-    if user_prompt.strip().lower() == "end":
-        chat_sessions.pop(session_id, None)
-        return jsonify({"message": "Chat history ended and deleted."})
+    chat_history, user_data, ready_for_status_check = process_user_prompt(
+        session_data, user_prompt
+    )
 
-    if not user_data["order"] or not user_data["postcode"]:
-        url = define_url()
-        params = set_parameters()
-        headers = set_headers(token)
-        body = define_body(chat_history)
-
-        response = send_post_request(url, headers, params, body)
-
-        if response.status_code == 200:
-            response_json = response.json()
-            content = (
-                response_json.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-
-            order_match = re.search(r"\b\d{10}\b", content)
-            postcode_match = re.search(r"\b\d{5}\b", content)
-
-            if order_match:
-                user_data["order"] = order_match.group(0)
-            if postcode_match:
-                user_data["postcode"] = postcode_match.group(0)
-
-            if not user_data["order"] or not user_data["postcode"]:
-                chat_history.append({"role": "assistant", "content": content})
-                # Check token limit and trim chat history if necessary
-                chat_history = trim_chat_history(chat_history)
-                return jsonify({"content": content})
-        else:
-            return (
-                jsonify(
-                    {
-                        "error": "Request failed",
-                        "status_code": response.status_code,
-                        "message": response.text,
-                    }
-                ),
-                response.status_code,
-            )
-
-    status = search_database(user_data["order"], user_data["postcode"])
-    if status:
-        chat_history.append(
-            {"role": "assistant", "content": f"Your order is currently {status}."}
-        )
-        user_data["order"] = ""
-        user_data["postcode"] = ""
+    if ready_for_status_check:
+        response_content = handle_search_status(user_data)
+        return jsonify({"content": response_content})
     else:
-        chat_history.append(
-            {
-                "role": "assistant",
-                "content": "Either your order number or your postcode is wrong. Can I have your order number and your postcode?",
-            }
+        content, status_checked = process_assistant_response(
+            token, chat_history, user_data
         )
-        user_data["order"] = ""
-        user_data["postcode"] = ""
+        if not status_checked:
+            return jsonify({"content": content})
 
-    # Check token limit and trim chat history if necessary
     chat_history = trim_chat_history(chat_history)
 
     url = define_url()
@@ -198,10 +223,7 @@ def handle_prompt():
         content = (
             response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
         )
-
-        # Add assistant's response to chat history
         chat_history.append({"role": "assistant", "content": content})
-
         return jsonify({"content": content})
     else:
         return (
