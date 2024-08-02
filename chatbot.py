@@ -3,6 +3,8 @@ import requests
 from requests.auth import HTTPBasicAuth
 import csv
 import re
+from hana_ml import dataframe
+from hdbcli import dbapi
 
 app = Flask(__name__)
 
@@ -19,6 +21,38 @@ background_prompt = (
     "If both are correct, check against the database to provide the order status. "
     "If the user provides either the order number or postcode, extract it and ask for the missing information."
 )
+
+hana_conn = dataframe.ConnectionContext(
+    address="28358960-63d7-4006-a363-234c155bb05d.hna2.prod-eu10.hanacloud.ondemand.com",
+    port="443",
+    user="DBADMIN",
+    password="$b7bwikwwb9}mm5A",
+    encrypt=True,
+)
+
+
+def search_database(order, postcode):
+    try:
+        sql = f"""
+        SELECT "STATUS" as "status"
+        FROM "PACKAGE_TRACKING"
+        WHERE "ORDER" = '{order}' AND "POSTCODE" = '{postcode}'
+        """
+
+        hana_df = dataframe.DataFrame(hana_conn, sql)
+        df_context = hana_df.collect()
+
+        if not df_context.empty:
+            return df_context.iloc[0]["status"]
+        else:
+            return None
+
+    except dbapi.Error as e:
+        print(f"Database error occurred: {e}")
+        return None
+
+    finally:
+        hana_conn.close()
 
 
 def generate_bearer_token(client_id, client_secret, auth_url):
@@ -79,15 +113,6 @@ def trim_chat_history(chat_history):
 def send_post_request(url, headers, params, body):
     response = requests.post(url, headers=headers, params=params, json=body)
     return response
-
-
-def search_database(order, postcode):
-    with open("database.csv", mode="r") as file:
-        reader = csv.DictReader(file, delimiter=";")
-        for row in reader:
-            if row["ORDER"] == order and row["POSTCODE"] == postcode:
-                return row["STATUS"]
-    return None
 
 
 def extract_order_and_postcode(content):
