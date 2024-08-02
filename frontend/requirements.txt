@@ -1,2 +1,2 @@
+requests
 streamlit
-cfenv==0.5.3
