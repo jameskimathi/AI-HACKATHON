@@ -1,17 +1,13 @@
 from flask import Flask, request, jsonify
 import requests
 from requests.auth import HTTPBasicAuth
-import csv
 import re
 from hana_ml import dataframe
 from hdbcli import dbapi
 
 app = Flask(__name__)
 
-# In-memory storage for chat sessions
 chat_sessions = {}
-
-TOKEN_LIMIT = 128000
 
 background_prompt = (
     "You are the digital assistant of the online pharmacy DocMorris. "
@@ -51,9 +47,6 @@ def search_database(order, postcode):
         print(f"Database error occurred: {e}")
         return None
 
-    finally:
-        hana_conn.close()
-
 
 def generate_bearer_token(client_id, client_secret, auth_url):
     response = requests.post(
@@ -87,27 +80,18 @@ def set_headers(token):
     }
 
 
-def define_body(chat_history):
+def define_body(prompt):
     return {
-        "messages": chat_history,
+        "messages": [
+            {"role": "system", "content": background_prompt},
+            {"role": "user", "content": prompt},
+        ],
         "max_tokens": 100,
         "temperature": 0.0,
         "frequency_penalty": 0,
         "presence_penalty": 0,
         "stop": None,
     }
-
-
-def count_tokens(chat_history):
-    return sum(len(message["content"].split()) for message in chat_history)
-
-
-def trim_chat_history(chat_history):
-    total_tokens = count_tokens(chat_history)
-    while total_tokens > TOKEN_LIMIT:
-        chat_history.pop(0)
-        total_tokens = count_tokens(chat_history)
-    return chat_history
 
 
 def send_post_request(url, headers, params, body):
@@ -125,10 +109,7 @@ def extract_order_and_postcode(content):
 
 def initialize_session(session_id):
     if session_id not in chat_sessions:
-        chat_sessions[session_id] = {
-            "history": [{"role": "system", "content": background_prompt}],
-            "user_data": {"order": "", "postcode": ""},
-        }
+        chat_sessions[session_id] = {"user_data": {"order": "", "postcode": ""}}
     return chat_sessions[session_id]
 
 
@@ -138,7 +119,6 @@ def handle_end_session(session_id):
 
 
 def process_user_prompt(session_data, user_prompt):
-    chat_history = session_data["history"]
     user_data = session_data["user_data"]
 
     order, postcode = extract_order_and_postcode(user_prompt)
@@ -149,16 +129,16 @@ def process_user_prompt(session_data, user_prompt):
         user_data["postcode"] = postcode
 
     if not user_data["order"] or not user_data["postcode"]:
-        return chat_history, user_data, False
+        return user_data, False
 
-    return chat_history, user_data, True
+    return user_data, True
 
 
-def process_assistant_response(token, chat_history, user_data):
+def process_assistant_response(token, prompt, user_data):
     url = define_url()
     params = set_parameters()
     headers = set_headers(token)
-    body = define_body(chat_history)
+    body = define_body(prompt)
 
     response = send_post_request(url, headers, params, body)
 
@@ -176,10 +156,8 @@ def process_assistant_response(token, chat_history, user_data):
             user_data["postcode"] = postcode
 
         if not user_data["order"] or not user_data["postcode"]:
-            chat_history.append({"role": "assistant", "content": content})
-            chat_history = trim_chat_history(chat_history)
             return content, False
-    return None, True
+    return content, True
 
 
 def handle_search_status(user_data):
@@ -194,7 +172,7 @@ def handle_search_status(user_data):
         return "Either your order number or your postcode is wrong. Can I have your order number and your postcode?"
 
 
-@app.route("/api/prompt", methods=["POST"])
+@app.route("/ask_chatbot", methods=["POST"])
 def handle_prompt():
     data = request.get_json()
     user_prompt = data.get("prompt")
@@ -213,55 +191,29 @@ def handle_prompt():
         return jsonify({"error": "Token generation failed"}), 500
 
     session_data = initialize_session(session_id)
-    chat_history = session_data["history"]
 
     if user_prompt.strip().lower() == "end":
         return jsonify(handle_end_session(session_id))
 
-    chat_history.append({"role": "user", "content": user_prompt})
-
-    chat_history, user_data, ready_for_status_check = process_user_prompt(
-        session_data, user_prompt
-    )
+    user_data, ready_for_status_check = process_user_prompt(session_data, user_prompt)
 
     if ready_for_status_check:
         response_content = handle_search_status(user_data)
         return jsonify({"content": response_content})
     else:
         content, status_checked = process_assistant_response(
-            token, chat_history, user_data
+            token, user_prompt, user_data
         )
         if not status_checked:
             return jsonify({"content": content})
 
-    chat_history = trim_chat_history(chat_history)
-
-    url = define_url()
-    params = set_parameters()
-    headers = set_headers(token)
-    body = define_body(chat_history)
-
-    response = send_post_request(url, headers, params, body)
-
-    if response.status_code == 200:
-        response_json = response.json()
-        content = (
-            response_json.get("choices", [{}])[0].get("message", {}).get("content", "")
-        )
-        chat_history.append({"role": "assistant", "content": content})
-        return jsonify({"content": content})
-    else:
-        return (
-            jsonify(
-                {
-                    "error": "Request failed",
-                    "status_code": response.status_code,
-                    "message": response.text,
-                }
-            ),
-            response.status_code,
-        )
+    content, _ = process_assistant_response(token, user_prompt, user_data)
+    return jsonify({"content": content})
 
 
 if __name__ == "__main__":
     app.run(debug=True)
+
+    # client_id = "sb-32916cb2-878b-4119-9375-dfccd7bb59ee!b499187|aicore!b540"
+    # client_secret = "99c22903-0345-49bc-a433-1b8e94d25c4a$2YZL8snh3OrfRhxPiaOkLNFtNLFXohHGJ24_B9o_gmA="
+    # auth_url = "https://ai-hackathon-k10o010k.authentication.eu10.hana.ondemand.com/oauth/token?grant_type=client_credentials"
