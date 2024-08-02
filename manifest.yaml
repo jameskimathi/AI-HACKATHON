@@ -1,0 +1,9 @@
+---
+applications:
+    - name: docmorris_chatbot
+      random-route: true
+      path: .
+      memory: 128M
+      buildpacks:
+          - python_buildpack
+      command: python chatbot.py
