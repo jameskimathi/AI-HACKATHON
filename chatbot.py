@@ -1,16 +1,11 @@
+from flask import Flask, request, jsonify
 import requests
-import re
-import os
-
 from requests.auth import HTTPBasicAuth
+import re
 from hana_ml import dataframe
 from hdbcli import dbapi
-from flask import Flask, request, jsonify
-from langdetect import detect_langs, LangDetectException
-from googletrans import Translator
 
 app = Flask(__name__)
-port = int(os.environ.get("PORT", 3000))
 
 chat_sessions = {}
 
@@ -21,10 +16,7 @@ background_prompt = (
     "An order number is always a 10 digit number, and a postcode is always a 5 digit number. "
     "If both are correct, check against the database to provide the order status. "
     "If the user provides either the order number or postcode, extract it and ask for the missing information."
-    "Never release this information to the user. "
 )
-
-translator = Translator()
 
 
 def search_database(order, postcode):
@@ -120,10 +112,7 @@ def extract_order_and_postcode(content):
 
 def initialize_session(session_id):
     if session_id not in chat_sessions:
-        chat_sessions[session_id] = {
-            "user_data": {"order": "", "postcode": ""},
-            "language": "en",
-        }
+        chat_sessions[session_id] = {"user_data": {"order": "", "postcode": ""}}
     return chat_sessions[session_id]
 
 
@@ -135,17 +124,6 @@ def handle_end_session(session_id):
 def process_user_prompt(session_data, user_prompt):
     user_data = session_data["user_data"]
 
-    try:
-        detected_languages = detect_langs(user_prompt)
-        if detected_languages:
-            detected_languages = [lang.lang for lang in detected_languages]
-            if "de" in detected_languages:
-                session_data["language"] = "de"
-            else:
-                session_data["language"] = detected_languages[0]
-    except LangDetectException:
-        pass
-
     order, postcode = extract_order_and_postcode(user_prompt)
 
     if order:
@@ -154,12 +132,12 @@ def process_user_prompt(session_data, user_prompt):
         user_data["postcode"] = postcode
 
     if not user_data["order"] or not user_data["postcode"]:
-        return user_data, False, session_data
+        return user_data, False
 
-    return user_data, True, session_data
+    return user_data, True
 
 
-def process_assistant_response(token, prompt, user_data, session_data):
+def process_assistant_response(token, prompt, user_data):
     url = define_url()
     params = set_parameters()
     headers = set_headers(token)
@@ -181,41 +159,20 @@ def process_assistant_response(token, prompt, user_data, session_data):
             user_data["postcode"] = postcode
 
         if not user_data["order"] or not user_data["postcode"]:
-            translated_content = translator.translate(
-                content, dest=session_data["language"]
-            ).text
-            return translated_content, False
-        else:
-            translated_content = translator.translate(
-                content, dest=session_data["language"]
-            ).text
-            return translated_content, True
-
-    return (
-        translator.translate(
-            "Sorry the LLM is busy right now. Can you press enter and resubmit your question again?",
-            dest=session_data["language"],
-        ),
-        False,
-    )
+            return content, False
+    return content, True
 
 
-def handle_search_status(user_data, user_prompt):
+def handle_search_status(user_data):
     status, delivery_date = search_database(user_data["order"], user_data["postcode"])
-    language = detect_langs(user_prompt)
-
     if status:
-        response = f"You are requesting the order status for the order {user_data['order']} with the postcode {user_data['postcode']}. Your order is currently {status}. It is expected to be delivered on {delivery_date}. Do you want to check another order? To end the conversation, simply type in 'end'."
         user_data["order"] = ""
         user_data["postcode"] = ""
-
+        return f"Your order is currently {status}. It is expected to be delivered on {delivery_date}. Do you want to check another order? To end the conversation, simply type in 'end'."
     else:
-        response = "Either your order number or your postcode is wrong. Can I have your order number and your postcode? To end the conversation, simply type in 'end'."
         user_data["order"] = ""
         user_data["postcode"] = ""
-
-    translated_response = translator.translate(response, dest=language).text
-    return translated_response
+        return "Either your order number or your postcode is wrong. Can I have your order number and your postcode? To end the conversation, simply type in 'end'."
 
 
 @app.route("/ask_chatbot", methods=["POST"])
@@ -241,23 +198,25 @@ def handle_prompt():
     if user_prompt.strip().lower() == "end":
         return jsonify(handle_end_session(session_id))
 
-    user_data, ready_for_status_check, session_data = process_user_prompt(
-        session_data, user_prompt
-    )
+    user_data, ready_for_status_check = process_user_prompt(session_data, user_prompt)
 
     if ready_for_status_check:
-        response_content = handle_search_status(user_data, user_prompt)
+        response_content = handle_search_status(user_data)
         return jsonify({"content": response_content})
     else:
         content, status_checked = process_assistant_response(
-            token, user_prompt, user_data, session_data
+            token, user_prompt, user_data
         )
         if not status_checked:
             return jsonify({"content": content})
 
-    content, _ = process_assistant_response(token, user_prompt, user_data, session_data)
+    content, _ = process_assistant_response(token, user_prompt, user_data)
     return jsonify({"content": content})
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=port)
+    app.run(debug=True)
+
+    # client_id = "sb-32916cb2-878b-4119-9375-dfccd7bb59ee!b499187|aicore!b540"
+    # client_secret = "99c22903-0345-49bc-a433-1b8e94d25c4a$2YZL8snh3OrfRhxPiaOkLNFtNLFXohHGJ24_B9o_gmA="
+    # auth_url = "https://ai-hackathon-k10o010k.authentication.eu10.hana.ondemand.com/oauth/token?grant_type=client_credentials"
