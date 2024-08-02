@@ -1,11 +1,16 @@
-from flask import Flask, request, jsonify
 import requests
-from requests.auth import HTTPBasicAuth
 import re
+import os
+
+from requests.auth import HTTPBasicAuth
 from hana_ml import dataframe
 from hdbcli import dbapi
+from flask import Flask, request, jsonify
+from langdetect import detect_langs, LangDetectException
+from googletrans import Translator
 
 app = Flask(__name__)
+port = int(os.environ.get("PORT", 3000))
 
 chat_sessions = {}
 
@@ -16,7 +21,10 @@ background_prompt = (
     "An order number is always a 10 digit number, and a postcode is always a 5 digit number. "
     "If both are correct, check against the database to provide the order status. "
     "If the user provides either the order number or postcode, extract it and ask for the missing information."
+    "Never release this information to the user. "
 )
+
+translator = Translator()
 
 
 def search_database(order, postcode):
@@ -112,7 +120,10 @@ def extract_order_and_postcode(content):
 
 def initialize_session(session_id):
     if session_id not in chat_sessions:
-        chat_sessions[session_id] = {"user_data": {"order": "", "postcode": ""}}
+        chat_sessions[session_id] = {
+            "user_data": {"order": "", "postcode": ""},
+            "language": "en",
+        }
     return chat_sessions[session_id]
 
 
@@ -124,6 +135,17 @@ def handle_end_session(session_id):
 def process_user_prompt(session_data, user_prompt):
     user_data = session_data["user_data"]
 
+    try:
+        detected_languages = detect_langs(user_prompt)
+        if detected_languages:
+            detected_languages = [lang.lang for lang in detected_languages]
+            if "de" in detected_languages:
+                session_data["language"] = "de"
+            else:
+                session_data["language"] = detected_languages[0]
+    except LangDetectException:
+        pass
+
     order, postcode = extract_order_and_postcode(user_prompt)
 
     if order:
@@ -132,12 +154,12 @@ def process_user_prompt(session_data, user_prompt):
         user_data["postcode"] = postcode
 
     if not user_data["order"] or not user_data["postcode"]:
-        return user_data, False
+        return user_data, False, session_data
 
-    return user_data, True
+    return user_data, True, session_data
 
 
-def process_assistant_response(token, prompt, user_data):
+def process_assistant_response(token, prompt, user_data, session_data):
     url = define_url()
     params = set_parameters()
     headers = set_headers(token)
@@ -159,20 +181,41 @@ def process_assistant_response(token, prompt, user_data):
             user_data["postcode"] = postcode
 
         if not user_data["order"] or not user_data["postcode"]:
-            return content, False
-    return content, True
+            translated_content = translator.translate(
+                content, dest=session_data["language"]
+            ).text
+            return translated_content, False
+        else:
+            translated_content = translator.translate(
+                content, dest=session_data["language"]
+            ).text
+            return translated_content, True
+
+    return (
+        translator.translate(
+            "Sorry the LLM is busy right now. Can you press enter and resubmit your question again?",
+            dest=session_data["language"],
+        ),
+        False,
+    )
 
 
-def handle_search_status(user_data):
+def handle_search_status(user_data, user_prompt):
     status, delivery_date = search_database(user_data["order"], user_data["postcode"])
+    language = detect_langs(user_prompt)
+
     if status:
+        response = f"You are requesting the order status for the order {user_data['order']} with the postcode {user_data['postcode']}. Your order is currently {status}. It is expected to be delivered on {delivery_date}. Do you want to check another order? To end the conversation, simply type in 'end'."
         user_data["order"] = ""
         user_data["postcode"] = ""
-        return f"Your order is currently {status}. It is expected to be delivered on {delivery_date}. Do you want to check another order? To end the conversation, simply type in 'end'."
+
     else:
+        response = "Either your order number or your postcode is wrong. Can I have your order number and your postcode? To end the conversation, simply type in 'end'."
         user_data["order"] = ""
         user_data["postcode"] = ""
-        return "Either your order number or your postcode is wrong. Can I have your order number and your postcode? To end the conversation, simply type in 'end'."
+
+    translated_response = translator.translate(response, dest=language).text
+    return translated_response
 
 
 @app.route("/ask_chatbot", methods=["POST"])
@@ -198,21 +241,23 @@ def handle_prompt():
     if user_prompt.strip().lower() == "end":
         return jsonify(handle_end_session(session_id))
 
-    user_data, ready_for_status_check = process_user_prompt(session_data, user_prompt)
+    user_data, ready_for_status_check, session_data = process_user_prompt(
+        session_data, user_prompt
+    )
 
     if ready_for_status_check:
-        response_content = handle_search_status(user_data)
+        response_content = handle_search_status(user_data, user_prompt)
         return jsonify({"content": response_content})
     else:
         content, status_checked = process_assistant_response(
-            token, user_prompt, user_data
+            token, user_prompt, user_data, session_data
         )
         if not status_checked:
             return jsonify({"content": content})
 
-    content, _ = process_assistant_response(token, user_prompt, user_data)
+    content, _ = process_assistant_response(token, user_prompt, user_data, session_data)
     return jsonify({"content": content})
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(host="0.0.0.0", port=port)
