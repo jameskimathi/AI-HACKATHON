@@ -47,6 +47,9 @@ def search_database(order, postcode):
         print(f"Database error occurred: {e}")
         return None, None
 
+    finally:
+        hana_conn.close()
+
 
 def generate_bearer_token(client_id, client_secret, auth_url):
     response = requests.post(
