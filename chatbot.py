@@ -247,6 +247,7 @@ def handle_search_status(user_data, session_id):
 @app.route("/ask_chatbot", methods=["POST"])
 def handle_prompt():
     data = request.get_json()
+    print(data)
     user_prompt = data.get("prompt")
     session_id = data.get("session_id")
 
