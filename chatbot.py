@@ -18,16 +18,16 @@ background_prompt = (
     "If the user provides either the order number or postcode, extract it and ask for the missing information."
 )
 
-hana_conn = dataframe.ConnectionContext(
-    address="28358960-63d7-4006-a363-234c155bb05d.hna2.prod-eu10.hanacloud.ondemand.com",
-    port="443",
-    user="DBADMIN",
-    password="$b7bwikwwb9}mm5A",
-    encrypt=True,
-)
-
 
 def search_database(order, postcode):
+    hana_conn = dataframe.ConnectionContext(
+        address="28358960-63d7-4006-a363-234c155bb05d.hna2.prod-eu10.hanacloud.ondemand.com",
+        port="443",
+        user="DBADMIN",
+        password="$b7bwikwwb9}mm5A",
+        encrypt=True,
+    )
+
     try:
         sql = f"""
         SELECT "STATUS" as "status", "ETA" as "delivery_date"
