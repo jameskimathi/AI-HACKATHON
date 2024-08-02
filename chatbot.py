@@ -30,7 +30,7 @@ hana_conn = dataframe.ConnectionContext(
 def search_database(order, postcode):
     try:
         sql = f"""
-        SELECT "STATUS" as "status"
+        SELECT "STATUS" as "status", "ETA" as "delivery_date"
         FROM "PACKAGE_TRACKING"
         WHERE "ORDER" = '{order}' AND "POSTCODE" = '{postcode}'
         """
@@ -39,13 +39,13 @@ def search_database(order, postcode):
         df_context = hana_df.collect()
 
         if not df_context.empty:
-            return df_context.iloc[0]["status"]
+            return df_context.iloc[0]["status"], df_context.iloc[0]["delivery_date"]
         else:
-            return None
+            return None, None
 
     except dbapi.Error as e:
         print(f"Database error occurred: {e}")
-        return None
+        return None, None
 
 
 def generate_bearer_token(client_id, client_secret, auth_url):
@@ -161,15 +161,15 @@ def process_assistant_response(token, prompt, user_data):
 
 
 def handle_search_status(user_data):
-    status = search_database(user_data["order"], user_data["postcode"])
+    status, delivery_date = search_database(user_data["order"], user_data["postcode"])
     if status:
         user_data["order"] = ""
         user_data["postcode"] = ""
-        return f"Your order is currently {status}. Do you want to check another order?"
+        return f"Your order is currently {status}. It is expected to be delivered on {delivery_date}. Do you want to check another order? To end the conversation, simply type in 'end'."
     else:
         user_data["order"] = ""
         user_data["postcode"] = ""
-        return "Either your order number or your postcode is wrong. Can I have your order number and your postcode?"
+        return "Either your order number or your postcode is wrong. Can I have your order number and your postcode? To end the conversation, simply type in 'end'."
 
 
 @app.route("/ask_chatbot", methods=["POST"])
