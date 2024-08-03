@@ -208,36 +208,24 @@ def handle_search_status(user_data, session_id):
     chat_history = chat_sessions[session_id]["history"]
     language = detect_language(chat_history)
 
+    for message in reversed(chat_history):
+        if user_data["order"] in message["content"]:
+            chat_history.remove(message)
+            break
+    for message in reversed(chat_history):
+        if user_data["postcode"] in message["content"]:
+            chat_history.remove(message)
+            break
+
+    user_data["order"] = ""
+    user_data["postcode"] = ""
+
     if status and delivery_date:
-        for message in reversed(chat_history):
-            if user_data["order"] in message["content"]:
-                chat_history.remove(message)
-                break
-        for message in reversed(chat_history):
-            if user_data["postcode"] in message["content"]:
-                chat_history.remove(message)
-                break
-
-        user_data["order"] = ""
-        user_data["postcode"] = ""
-
         if language == "german":
             return f"Ihre Bestellung ist derzeit {status}. Es wird voraussichtlich am {delivery_date} geliefert. Möchten Sie eine weitere Bestellung überprüfen? Um das Gespräch zu beenden, geben Sie einfach 'ende' ein."
         else:
             return f"Your order is currently {status}. It is expected to be delivered on {delivery_date}. Do you want to check another order? To end the conversation, simply type in 'end'."
     else:
-        for message in reversed(chat_history):
-            if user_data["order"] in message["content"]:
-                chat_history.remove(message)
-                break
-        for message in reversed(chat_history):
-            if user_data["postcode"] in message["content"]:
-                chat_history.remove(message)
-                break
-
-        user_data["order"] = ""
-        user_data["postcode"] = ""
-
         if language == "german":
             return "Entweder ist Ihre Bestellnummer oder Ihre Postleitzahl falsch. Kann ich Ihre Bestellnummer und Ihre Postleitzahl haben? Um das Gespräch zu beenden, geben Sie einfach 'ende' ein."
         else:
